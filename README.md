@@ -3,7 +3,7 @@
 Fast and simple external memory reading library for Linux
 
 ## Features
-- `process_vm_readv` based reading (best method on Linux)
+- `process_vm_readv` based reading (will get stealthier in the future)
 - Optional configurable random delay
 - Clean C-like API
 - Easy process and module finding
