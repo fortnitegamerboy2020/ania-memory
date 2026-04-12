@@ -149,7 +149,7 @@ pub fn read_bytes(target_process: &a_process, target_address: u64, size: usize) 
         // sleep a random amount of miliseconds from the delayed read minimuim and maximum
 		sleep(std::time::Duration::from_millis(random(DELAYED_READ_MIN.load(Ordering::Relaxed), DELAYED_READ_MAX.load(Ordering::Relaxed)) as u64));
 	}
-    let mut buffer: Vec<u8> = vec![];  // create a new byte array
+    let mut buffer: Vec<u8> = vec![0u8; size];  // create a new byte array
     let local_iov = iovec { // create the local iov (buffer)
         iov_base: buffer.as_mut_ptr() as *mut c_void, // set base as buffer ptr
         iov_len: size // set the size to the passed size parameter
@@ -165,7 +165,7 @@ pub fn read_bytes(target_process: &a_process, target_address: u64, size: usize) 
             0 // flag 0 for unused
         ) as usize // convert isize to usize
     };
-    if result_read == size // if the read size was the same size as the passed size parameter
+    if result_read > 0 && result_read == size // if the read size was the same size as the passed size parameter
     {
         return buffer; // return the byte array
     }
