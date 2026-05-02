@@ -1,6 +1,6 @@
 [package]
 name = "ania_memory"
-version = "1.5.1"
+version = "1.6.1"
 edition = "2024"
 description = "Pretty basic memory library for linux using procfs & libc with toggleable random delay between reads. Still in testing, if you have issues, contact me on discord: mwmwmwmwmwwwmwmwmwmw"
 license = "MIT OR Apache-2.0"
