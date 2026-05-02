@@ -1,4 +1,4 @@
-use std::{alloc::{Layout, alloc}, ffi::c_void, sync::atomic::{AtomicBool, AtomicUsize, Ordering}, thread::sleep, vec};
+use std::{ffi::c_void, fs::exists, sync::atomic::{AtomicBool, AtomicUsize, Ordering}, thread::sleep, vec};
 
 use libc::{iovec, process_vm_readv};
 use procfs::{self, process::Process};
@@ -12,20 +12,24 @@ pub fn random(start: usize, end: usize) -> usize
     let mut range = rand::rng(); // get a new range
     return range.random_range(start..=end); // return random from start to end
 }
-#[allow(non_camel_case_types)]
+#[derive(Clone)]
 pub struct a_process
 {
-    pub process: Option<Process>, // only way to put it as None
     pub process_id: u32, // process id
     pub file_name: String, // the name of the process, eg "cs2.exe"
     pub cmd_line: Vec<String> // command line arguments that the process was created with
 }
-#[allow(non_camel_case_types)]
+#[derive(Clone)]
 pub struct a_module {
     pub name: String,      // e.g. "client.dll"
-    pub base: u64,         // base address
-    pub size: u64,         // size of the module
+    pub base: usize,         // base address
+    pub size: usize,         // size of the module
     
+}
+pub fn process_alive(process_id: u32) -> bool 
+{
+    let path_str = "/proc/".to_owned() + &process_id.to_string(); // get the path of proc
+    return exists(path_str).unwrap_or(false); // return if the process folder exists
 }
 pub fn find_processes() -> Vec<a_process> // returns a list of processes
 {
@@ -43,10 +47,58 @@ pub fn find_processes() -> Vec<a_process> // returns a list of processes
             .unwrap_or("unknown")
             .to_string();
         let process_id: u32 = process.pid() as u32; // get its process id
-        processes.push(a_process { process: Some(process), process_id, file_name, cmd_line: cmdline }); // push a new process struct
+        processes.push(a_process { process_id, file_name, cmd_line: cmdline }); // push a new process struct
 
     }
     return processes;
+}
+pub fn find_modules(process: &a_process) -> Vec<a_module> { // rewrite
+    let process = match Process::new(process.process_id as i32) { // get process from the process struct pid
+        Ok(p) => p,
+        Err(_) => return vec![],
+    };
+
+    let Ok(maps) = process.maps() else { // get maps
+        return vec![];
+    };
+
+    let mut modules: Vec<a_module> = vec![];
+
+    for map in maps { // for all the maps
+        let (start_addr, end_addr) = map.address; // get the start & end
+
+        let name = match &map.pathname { // get the name
+            procfs::process::MMapPath::Path(path) => {
+                path.file_name()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or("unknown")
+                    .to_string()
+            }
+
+            procfs::process::MMapPath::Heap => "[heap]".to_string(), // if its a heap just name it [heap]
+            procfs::process::MMapPath::Stack => "[stack]".to_string(), // if its a stack just name it [stack]
+
+            procfs::process::MMapPath::TStack(tid) => {
+                format!("[thread stack {}]", tid)
+            }
+
+            procfs::process::MMapPath::Vdso => "[vdso]".to_string(), // if its a vdso just name it [vdso]
+            procfs::process::MMapPath::Vvar => "[vvar]".to_string(), // if its a vvar just name it [vvar]
+            procfs::process::MMapPath::Vsyscall => "[vsyscall]".to_string(), // if its a vsyscall just name it [vsyscall]
+
+            procfs::process::MMapPath::Anonymous => "[anonymous]".to_string(), // if its a anonymous region just name it [anonymous]
+
+            other => format!("{:?}", other),
+        };
+
+        modules.push(a_module { // push a new entry into modules
+            name, // the name of the module
+            base: start_addr as usize, // the start address
+            size: (end_addr as usize) - (start_addr as usize), // get size by subtracting end address by start address
+        });
+    }
+
+    return modules; // return modules
 }
 pub fn find_process_from_process_id(target_process_id: u32) -> a_process
 {
@@ -58,7 +110,7 @@ pub fn find_process_from_process_id(target_process_id: u32) -> a_process
             return current_process; // return the a_process
         }
     }
-    return a_process { process: None, process_id: 0, file_name: String::from(""), cmd_line:  vec![]}; // return a_process with nothing
+    return a_process { process_id: 0, file_name: String::from(""), cmd_line:  vec![]}; // return a_process with nothing
 }
 pub fn find_process_from_name(target_process_name: String) -> a_process
 {
@@ -69,12 +121,12 @@ pub fn find_process_from_name(target_process_name: String) -> a_process
             return process; // return the a_process
         }
     }
-    return a_process { process: None, process_id: 0, file_name: String::from(""), cmd_line: vec![] }; // return a_process with nothing
+    return a_process { process_id: 0, file_name: String::from(""), cmd_line: vec![] }; // return a_process with nothing
 }
 pub fn find_module_from_name(target_module_name: String, target_process: &a_process) -> a_module {
-    let process = match &target_process.process { // check if a_process is even valid
-        Some(p) => p, // process = Process if valid
-        None => return a_module {  // return a_module with nothing
+    let process = match Process::new(target_process.process_id as i32) { // check if a_process is even valid
+        Ok(p) => p, // process = Process if valid
+        Err(_e) => return a_module {  // return a_module with nothing
             name: String::from(""), 
             base: 0x0, 
             size: 0x0 
@@ -105,13 +157,13 @@ pub fn find_module_from_name(target_module_name: String, target_process: &a_proc
             let (start_addr, end_addr) = map.address; // get start and end addr
             let real_name = pathname.file_name() // get its exe / file name no lowercase
                 .and_then(|s| s.to_str())
-                .unwrap_or("unknown.so")
+                .unwrap_or("unknown map")
                 .to_string();
 
             return a_module { // return a_module
                 name: real_name,
-                base: start_addr,
-                size: end_addr - start_addr,
+                base: start_addr as usize,
+                size: end_addr as usize - start_addr as usize,
             };
         }
     }
@@ -142,7 +194,7 @@ pub fn set_delay_range(min_ms: usize, max_ms: usize) { // miliseconds
     DELAYED_READ_MIN.store(min_ms, Ordering::Relaxed); // set minimum sleep
     DELAYED_READ_MAX.store(max_ms, Ordering::Relaxed); // set maximum sleep
 }
-pub fn read_bytes(target_process: &a_process, target_address: u64, size: usize) -> Vec<u8> // read a list of bytes
+pub fn read_bytes(target_process: &a_process, target_address: usize, size: usize) -> Vec<u8> // read a list of bytes
 {
     if DELAYED_READS_ENABLED.load(Ordering::Relaxed) // if delayed reading is on
 	{
@@ -171,7 +223,7 @@ pub fn read_bytes(target_process: &a_process, target_address: u64, size: usize) 
     }
     return vec![]; // return a empty byte array
 }
-pub fn read<T: Copy>(target_process: &a_process, target_address: u64) -> Option<T>
+pub fn read<T: Copy>(target_process: &a_process, target_address: usize) -> Option<T>
 {
     // read however many bytes of the type they want to read with
     let read_bytes = read_bytes(target_process, target_address, std::mem::size_of::<T>()); 
@@ -187,31 +239,59 @@ pub fn read<T: Copy>(target_process: &a_process, target_address: u64) -> Option<
 
 // these are kept for backwards compatability and for those who just want to use this for simplicity
 
-pub fn read_f64(target_process: &a_process, target_address: u64) -> f64 // wrapper
+pub fn read_f64(target_process: &a_process, target_address: usize) -> f64 // wrapper
 {
     return read::<f64>(target_process, target_address).unwrap_or(0.0); // use read with the type and return the read or if it fails then 0.0 for float
 }
-pub fn read_f32(target_process: &a_process, target_address: u64) -> f32 // wrapper
+pub fn read_f32(target_process: &a_process, target_address: usize) -> f32 // wrapper
 {
     return read::<f32>(target_process, target_address).unwrap_or(0.0); // use read with the type and return the read or if it fails then 0.0 for float
 }
-pub fn read_u64(target_process: &a_process, target_address: u64) -> u64 // wrapper
+pub fn read_u64(target_process: &a_process, target_address: usize) -> u64 // wrapper
 {
     return read::<u64>(target_process, target_address).unwrap_or(0); // use read with the type and return the read or if it fails then 0
 }
-pub fn read_u32(target_process: &a_process, target_address: u64) -> u32 // wrapper
+pub fn read_u32(target_process: &a_process, target_address: usize) -> u32 // wrapper
 {
     return read::<u32>(target_process, target_address).unwrap_or(0); // use read with the type and return the read or if it fails then 0
 }
-pub fn read_u16(target_process: &a_process, target_address: u64) -> u16 // wrapper
+pub fn read_u16(target_process: &a_process, target_address: usize) -> u16 // wrapper
 {
     return read::<u16>(target_process, target_address).unwrap_or(0); // use read with the type and return the read or if it fails then 0
 }
-pub fn read_u8(target_process: &a_process, target_address: u64) -> u8 // wrapper
+pub fn read_u8(target_process: &a_process, target_address: usize) -> u8 // wrapper
 {
     return read::<u8>(target_process, target_address).unwrap_or(0); // use read with the type and return the read or if it fails then 0
 }
-pub fn read_usize(target_process: &a_process, target_address: u64) -> usize // wrapper
+pub fn read_i64(target_process: &a_process, target_address: usize) -> i64 // wrapper
+{
+    return read::<i64>(target_process, target_address).unwrap_or(0); // use read with the type and return the read or if it fails then 0
+}
+pub fn read_i32(target_process: &a_process, target_address: usize) -> i32 // wrapper
+{
+    return read::<i32>(target_process, target_address).unwrap_or(0); // use read with the type and return the read or if it fails then 0
+}
+pub fn read_i16(target_process: &a_process, target_address: usize) -> i16 // wrapper
+{
+    return read::<i16>(target_process, target_address).unwrap_or(0); // use read with the type and return the read or if it fails then 0
+}
+pub fn read_i8(target_process: &a_process, target_address: usize) -> i8 // wrapper
+{
+    return read::<i8>(target_process, target_address).unwrap_or(0); // use read with the type and return the read or if it fails then 0
+}
+pub fn read_usize(target_process: &a_process, target_address: usize) -> usize // wrapper
 {
     return read::<usize>(target_process, target_address).unwrap_or(0); // use read with the type and return the read or if it fails then 0
+}
+pub fn read_bool(target_process: &a_process, target_address: usize) -> bool  // use read withe the type and return if the read or if it fails then false
+{
+    return read::<bool>(target_process, target_address).unwrap_or(false); // wrapper
+}
+pub fn address_in_map(address: usize, maps: &Vec<a_module>) -> bool { // return if the address is in real memory space
+    for map in maps { // for each module
+        if address >= map.base && address <= map.base + map.size { // check if the address is within the map
+            return true; // return true
+        }
+    }
+    return false; // return false for no theres no address in any map brah
 }
