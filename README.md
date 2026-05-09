@@ -1,4 +1,4 @@
-# ania
+# ania (DEPRECATED)
 
 Fast and simple external memory reading library for Linux
 
